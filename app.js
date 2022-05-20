@@ -1,6 +1,8 @@
 
 //Author: Jacob Russell
-//Date: 05-10-2022
+//API Portfolio Project
+//OSU: CS493
+//05-19-22
 
 //-------------------SETUP--------------------------
 
@@ -30,7 +32,7 @@ app.engine('handlebars', engine({
 }));
 
 const datastore = new Datastore({
-  projectId: 'a7-more-auth',
+  projectId: 'api-portfolio-project-350723',
 });
 
 const checkJwt = jwt({
