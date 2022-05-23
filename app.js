@@ -4,7 +4,9 @@
 //OSU: CS493
 //05-19-22
 
+
 //-------------------SETUP--------------------------
+
 
 'use strict';
 
@@ -64,7 +66,9 @@ const management_token_request = {
 
 const DEBUG = true;   //if true, shows debug if (DEBUG) console.logs
 
+
 //-----------------------FUNCTIONS-----------------------------------
+
 
 //get auth0 management token to use management API tools
 async function get_management_token(){
@@ -265,7 +269,7 @@ function get_next_page(page_info, req){
 }
 
 
-//------------------------ROUTERS-----------------------------------
+//------------------------LOGIN ROUTERS-----------------------------------
 
 
 app.get('/', function(req, res) { 
@@ -308,6 +312,10 @@ app.post('/login', async function(req, res) {
     res.status(error.response.status).send(error.response.data);
   }
 });
+
+
+//-----------------------BOAT ROUTERS---------------------------------
+
 
 //Add boat router
 app.post('/boats', checkJwt, async function(req, res){
@@ -499,7 +507,7 @@ app.use(async function (err, req, res, next) {
 });
 
 //Update SOME of a boat's attributes
-app.patch('/boats/:id', async (req, res, next) => {
+app.patch('/boats/:id', checkJwt, async (req, res, next) => {
   try {
 
     let status_code = null;
@@ -572,9 +580,10 @@ app.patch('/boats/:id', async (req, res, next) => {
     status_code = 200;
     res.status(status_code).send(attachID(boat));
 
-    } catch (error) {
-      next(error);
-    }
+  } catch(error){
+    if (DEBUG) console.log(error);
+    res.send(error);
+  }
 });
 
 //If JWT invalid, return an error
@@ -591,7 +600,7 @@ app.use(async function (err, req, res, next) {
 });
 
 //Update ALL of a boat's attributes
-app.put('/boats/:id', async (req, res, next) => {
+app.put('/boats/:id', checkJwt, async (req, res, next) => {
   try {
 
     let status_code = null;
@@ -644,13 +653,12 @@ app.put('/boats/:id', async (req, res, next) => {
       return;  
     }
 
-    //Check for duplicate boat names
-    const is_unique_name = await uniqueNameCheck(boat_update.name, 'boat');
-    if (!is_unique_name){
-      if (DEBUG) console.log("Name is a duplicate, boat not added.");
-      status_code = 403;
-      error = {"Error": "Duplicate names not allowed."};
-      res.status(403).send(error);
+    //Verify boat belongs to this user
+    if (DEBUG) console.log("Verifying owner is correct");
+    const owner_id = req.auth.sub;
+    if (boat.owner !== owner_id){
+      if (DEBUG) console.log("User does not own this boat! Patch request denied.");
+      res.status(401).send({"Error": "You cannot edit someone else's boat."});
       return;
     }
 
@@ -743,7 +751,303 @@ app.use(async function (err, req, res, next) {
   }
 });
 
+
+//-----------------------LOAD ROUTERS---------------------------------
+
+
+//Add a load
+app.post('/loads', async (req, res, next) => {
+  console.log("Adding load:", req.body);
+  const load_info = req.body;
+  load_info.carrier = null;  //loads always start with no carrier (boat)
+  //check for missing requirements
+  if (!load_info.volume || !load_info.item || !load_info.creation_date){
+    console.log("Add load failed. One or more required attributes missing.");
+    res
+      .status(400)
+      .set('Content-Type', 'application/json')
+      .send({"Error": "The request object is missing at least one of the required attributes"})
+      .end();
+    } else {
+  //if all requirements present, add load
+    try {
+      const load = await addEntity('load', load_info);  //create and save new entity
+      attachID(load);   //attach entity ID to response
+      attachSelfURL(req, load, 'loads');  //attach self URL to the response
+      console.log("Created load and attached ID and Self:", load);
+    res
+      .status(201)
+      .set('Content-Type', 'application/json')
+      .send(load)
+      .end();
+    } catch (error) {
+      next(error);
+    }
+  }
+});
+
+//Get list of all loads (first page, no cursor given)
+app.get('/loads', async (req, res, next) => {
+  try {
+    let results = await getEntities('load');
+    const info = results[1];
+    const loads = results[0];
+    const cursor = info.endCursor;
+    console.log("Info:", info);
+    attachSelfURLs(req, loads, 'loads');
+    let next_link = "NO MORE RESULTS";
+    if (info.moreResults !== Datastore.NO_MORE_RESULTS)
+      next_link = req.protocol + "://" + req.get('host') + "/loads/page/" + encodeURIComponent(cursor);
+    const resp = {
+      "loads": loads,
+      "next": next_link
+    }
+    //results = [loads, cursor];
+    //console.log("All loads:", loads);
+    res
+      .status(200)
+      .set('Content-Type', 'application/json')
+      .send(resp)
+      .end();
+  } catch (error) {
+    next(error);
+  }
+});
+
+//Get list of all loads if a cursor is given for pagination
+app.get('/loads/page/:page_cursor', async (req, res, next) => {
+  try {
+    let results = await getEntities('load', req.params.page_cursor);
+    const info = results[1];
+    const loads = results[0];
+    const cursor = info.endCursor;
+    console.log("Info:", info);
+    attachSelfURLs(req, loads, 'loads');
+    let next_link = "NO MORE RESULTS";
+    if (info.moreResults !== Datastore.NO_MORE_RESULTS)
+      next_link = req.protocol + "://" + req.get('host') + "/loads/page/" + encodeURIComponent(cursor);
+    const resp = {
+      "loads": loads,
+      "next": next_link
+    }
+    //results = [loads, cursor];
+    //console.log("All loads:", loads);
+    res
+      .status(200)
+      .set('Content-Type', 'application/json')
+      .send(resp)
+      .end();
+  } catch (error) {
+    next(error);
+  }
+});
+
+//Get load by ID
+app.get('/loads/:id', async (req, res, next) => {
+  try {
+    console.log("Looking for ID:", req.params.id);
+    const [load] = await getEntity('load', req.params.id);
+    if (!load){
+      console.log(`No load with ID ${req.params.id} found.`)
+      res
+        .status(404)
+        .set('Content-Type', 'application/json')
+        .send({"Error": "No load with this load_id exists"})
+        .end();
+    } else {
+      console.log("Found matching load:", load);
+      attachID(load);
+      attachSelfURL(req, load, 'loads');
+      res
+        .status(200)
+        .set('Content-Type', 'application/json')
+        .send(attachID(load))
+        .end();
+      }
+    } catch (error) {
+      next(error);
+    }
+});
+
+//Delete a load
+app.delete('/loads/:id', async (req, res, next) => { 
+  try{
+    const load_id = req.params.id;
+    console.log("Looking for ID:", load_id);
+    const [load] = await getEntity('load', load_id);
+
+    //If no load with ID found
+    if (!load){
+      console.log(`No load with ID ${load_id} found.`);
+      res
+        .status(404)
+        .set('Content-Type', 'application/json')
+        .send({"Error": "No load with this load_id exists"})
+        .end();      
+    } else {
+      console.log("Found matching load key:", load);
+
+      //First, remove load from boat, if it's loaded on one
+      const boat_id = load.carrier.id;
+      const [boat] = await getEntity('boat', boat_id);
+      if (boat.loads){
+        //console.log("Current boat loads:", boat.loads);
+        for (let i = 0; i < boat.loads.length; i++){
+          if (boat.loads[i].id === load_id){
+            boat.loads.splice(i, 1);
+            //console.log("Boat loads after removing load:", boat.loads);
+            await datastore.update(boat);
+          }
+        }
+      }
+
+      const key = load[Datastore.KEY];
+      datastore.delete(key, (err, apiResp) => {
+        if (err)
+          console.log(err);
+        console.log("Datastore delete api response:", apiResp);
+      });
+      console.log(`Slip ${load_id} successfully deleted.`);
+      res
+        .status(204)
+        .set('Content-Type', 'application/json')
+        .end();
+    }
+  } catch(error){
+    console.log(error);
+    next(error);
+  }
+});
+
+//assign load to boat
+app.put('/boats/:boat_id/loads/:load_id', async (req, res, next) => { 
+  try{
+    //Get the requested load
+    const [load] = await getEntity('load', req.params.load_id);
+    console.log("Found load:", load);
+
+    //Get the requested boat
+    const [boat] = await getEntity('boat', req.params.boat_id);
+    console.log("Found boat:", boat);
+
+    //Make sure requested load and boat exist
+    if (!load || !boat){
+      console.log("Load/boat doesn't exist");
+      res
+        .status(404)
+        .set('Content-Type', 'application/json')
+        .send({"Error": "The specified boat and/or load does not exist"})
+        .end();      
+    }
+
+    //If load already assigned to another boat
+    else if(load.carrier) {
+      console.log("Load already assigned to another boat");
+      res
+        .status(403)
+        .set('Content-Type', 'application/json')
+        .send({"Error": "The load is already loaded on another boat"})
+        .end();   
+    }
+
+    //If load and boat exists, and load isn't already assigned, add load to boat
+    else {
+
+      boat.loads.push({  //add load info to boat.loads
+        "id": load[datastore.KEY].id,
+        "self": getSelfURL(req, load, 'loads')
+      });
+      load.carrier = {   //add boat info to load.carrier
+        "id": boat[datastore.KEY].id,
+        "name": boat.name,
+        "self": getSelfURL(req, boat, 'boats')
+      };
+      console.log("Updated boat info:", boat);
+      console.log("Updated load info:", load);
+
+      await datastore.update(boat);
+      await datastore.update(load);
+      console.log(`Added load ${load[datastore.KEY].id} to boat ${boat[datastore.KEY].id}`);
+      res
+        .status(204)
+        .set('Content-Type', 'application/json')
+        .end();   
+    }
+  } catch(error){
+    console.log(error);
+    next(error);
+  }
+});
+
+//Remove load from boat
+app.delete('/boats/:boat_id/loads/:load_id', async (req, res, next) => { 
+  try{
+
+    //Get the requested load
+    const [load] = await getEntity('load', req.params.load_id);
+    console.log("Found load:", load);
+
+    //Get the requested boat
+    const [boat] = await getEntity('boat', req.params.boat_id);
+    console.log("Found boat:", boat);
+
+    //If boat or load don't exist
+    if (!boat || !load){
+      console.log("No boat with this boat_id is loaded with the load with this load_id");
+      res
+        .status(404)
+        .set('Content-Type', 'application/json')
+        .send({"Error": "No boat with this boat_id is loaded with the load with this load_id"})
+        .end();    
+      return;  
+    }
+
+    //Determine if requested removed load is actually on given boat
+    let found_load = null;
+    const load_id = req.params.load_id;
+    if (boat.loads){
+      console.log("Loads on boat:", boat.loads);
+      console.log("Load carrier:", load.carrier);  
+      for (let i = 0; i < boat.loads.length; i++){
+        if (boat.loads[i].id = load_id){
+          found_load = boat.loads[i].id; //if we find the load on the boat
+          boat.loads.splice(i, 1); //remove load from boat loads
+        }
+      }
+    }
+
+    //If load isn't on the boat
+    if (!found_load){
+      console.log("No boat with this boat_id is loaded with the load with this load_id");
+      res
+        .status(404)
+        .set('Content-Type', 'application/json')
+        .send({"Error": "No boat with this boat_id is loaded with the load with this load_id"})
+        .end();      
+    }
+
+    //If load and boat exists, remove load from boat
+    else {
+      //boat.loads = boat_loads;  //remove load from boat
+      load.carrier = null;  //remove boat from load
+      await datastore.update(boat);
+      await datastore.update(load);
+      console.log(`Removed load ${load[datastore.KEY].id} from boat ${boat[datastore.KEY].id}`);
+      res
+        .status(204)
+        .set('Content-Type', 'application/json')
+        .end();   
+    }
+  } catch(error){
+    console.log(error);
+    next(error);
+  }
+
+});
+
+
 //------------------------RUN APP----------------------------------
+
 
 const PORT = parseInt(parseInt(process.env.PORT)) || 8080;
 app.listen(PORT, () => {
