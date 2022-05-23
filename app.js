@@ -70,78 +70,6 @@ const DEBUG = true;   //if true, shows debug if (DEBUG) console.logs
 //-----------------------FUNCTIONS-----------------------------------
 
 
-//get auth0 management token to use management API tools
-async function get_management_token(){
-  const options = {
-    method: "POST",
-    url: `https://${config.domain}/oauth/token`,
-    data: {
-      grant_type: 'client_credentials',
-      client_id: config.client_ID,
-      client_secret: config.client_secret,
-      audience: `https://${config.domain}/api/v2/`
-    }
-  };
-  let response = await axios.request(options);
-  if (DEBUG) console.log(response);
-  const management_token = response.data.access_token;
-  if (DEBUG) console.log("Management token:", management_token);
-  return management_token;
-}
-
-//Get all auth0 users from this app
-async function get_users(token){
-  const options = {
-    method: 'GET',
-    url: `https://${config.domain}/api/v2/users`,
-    headers: {
-      authorization: "Bearer " + token
-    }  
-  }
-  let response = await axios.request(options);
-  const users = response.data;
-  if (DEBUG) console.log(users);
-  return users;
-}
-
-//Create auth0 user
-async function create_user(username, password, token){
-  const options = {
-    method: 'POST',
-    url: `https://${config.domain}/api/v2/users`,
-    headers: {
-      authorization: "Bearer " + token
-    },
-    data: {
-      email: username,
-      password: password,
-      connection: "Username-Password-Authentication"
-    }
-  }
-  let response = await axios.request(options);
-  if (DEBUG) console.log(response.data);
-}
-
-//Get auth0 user JWT token
-async function get_user_token(username, password){
-  const options = {
-    method: 'POST',
-    url: `https://${config.domain}/oauth/token`,
-    data: {
-      username: username,
-      password: password,
-      grant_type: "password",
-      connection: "Username-Password-Authentication",
-      client_id: config.client_ID,
-      client_secret: config.client_secret
-    }
-  }
-  let response = await axios.request(options);
-  //if (DEBUG) console.log(response.data.id_token);
-  if (DEBUG) console.log(response.data);
-  return response.data.id_token;
-}
-
 //Add entity to datastore
 async function addEntity(kind, entity_info){
   const entity_key = datastore.key(kind);
@@ -158,6 +86,42 @@ async function addEntity(kind, entity_info){
 function attachID(entity){
   entity.id = entity[Datastore.KEY].id;
   return entity;
+}
+
+//Creates and attaches a self URL to entity (e.g. 'http://localhost/loads/1234')
+function attachSelfURL(request, entity, kinds){
+  const endpoint = kinds + "/" + entity[datastore.KEY].id;
+  const selfURL = request.protocol + "://" + request.get('host') + "/" + endpoint;
+  entity.self = selfURL;
+  return entity;
+}
+
+//Creates and attaches self URLSL to all entities (e.g. 'http://localhost/loads/1234')
+function attachSelfURLs(request, entities, kinds){
+  for (let i = 0; i < entities.length; i++){
+    const endpoint = kinds + "/" + entities[i][datastore.KEY].id;
+    const selfURL = request.protocol + "://" + request.get('host') + "/" + endpoint;
+    entities[i].self = selfURL;
+  }
+  return entities;
+}
+
+//Create auth0 user
+async function createUser(username, password, token){
+  const options = {
+    method: 'POST',
+    url: `https://${config.domain}/api/v2/users`,
+    headers: {
+      authorization: "Bearer " + token
+    },
+    data: {
+      email: username,
+      password: password,
+      connection: "Username-Password-Authentication"
+    }
+  }
+  let response = await axios.request(options);
+  if (DEBUG) console.log(response.data);
 }
 
 //Get list of all entities, attach self url and id before returning
@@ -195,22 +159,34 @@ async function getEntity(kind, id){
   return datastore.get(key);
 }
 
-//Creates and attaches a self URL to entity (e.g. 'http://localhost/loads/1234')
-function attachSelfURL(request, entity, kinds){
-  const endpoint = kinds + "/" + entity[datastore.KEY].id;
-  const selfURL = request.protocol + "://" + request.get('host') + "/" + endpoint;
-  entity.self = selfURL;
-  return entity;
+//get auth0 management token to use management API tools
+async function getManagementToken(){
+  const options = {
+    method: "POST",
+    url: `https://${config.domain}/oauth/token`,
+    data: {
+      grant_type: 'client_credentials',
+      client_id: config.client_ID,
+      client_secret: config.client_secret,
+      audience: `https://${config.domain}/api/v2/`
+    }
+  };
+  let response = await axios.request(options);
+  if (DEBUG) console.log(response);
+  const management_token = response.data.access_token;
+  if (DEBUG) console.log("Management token:", management_token);
+  return management_token;
 }
 
-//Creates and attaches self URLSL to all entities (e.g. 'http://localhost/loads/1234')
-function attachSelfURLs(request, entities, kinds){
-  for (let i = 0; i < entities.length; i++){
-    const endpoint = kinds + "/" + entities[i][datastore.KEY].id;
-    const selfURL = request.protocol + "://" + request.get('host') + "/" + endpoint;
-    entities[i].self = selfURL;
+//Builds a "next page" link for paginated results
+function getNextPage(page_info, req){
+  let next_link = "NO MORE RESULTS";
+  let page_cursor = page_info.endCursor;
+  if (page_info.moreResults !== Datastore.NO_MORE_RESULTS){
+    next_link = req.protocol + "://" + req.get('host') 
+                + "/boats/page/" + encodeURIComponent(page_cursor);
   }
-  return entities;
+  return next_link
 }
 
 //Returns self URL to entity (e.g. 'http://localhost/loads/1234')
@@ -218,6 +194,41 @@ function getSelfURL(request, entity, kinds){
   const endpoint = kinds + "/" + entity[datastore.KEY].id;
   const selfURL = request.protocol + "://" + request.get('host') + "/" + endpoint;
   return selfURL;
+}
+
+//Get all auth0 users from this app
+async function getUsers(token){
+  const options = {
+    method: 'GET',
+    url: `https://${config.domain}/api/v2/users`,
+    headers: {
+      authorization: "Bearer " + token
+    }  
+  }
+  let response = await axios.request(options);
+  const users = response.data;
+  if (DEBUG) console.log(users);
+  return users;
+}
+
+//Get auth0 user JWT token
+async function getUserToken(username, password){
+  const options = {
+    method: 'POST',
+    url: `https://${config.domain}/oauth/token`,
+    data: {
+      username: username,
+      password: password,
+      grant_type: "password",
+      connection: "Username-Password-Authentication",
+      client_id: config.client_ID,
+      client_secret: config.client_secret
+    }
+  }
+  let response = await axios.request(options);
+  //if (DEBUG) console.log(response.data.id_token);
+  if (DEBUG) console.log(response.data);
+  return response.data.id_token;
 }
 
 //Takes a request object and a array of accepted types of content
@@ -257,19 +268,9 @@ function validateRequestData(req_body){
   return error;
 }
 
-//Builds a "next page" link for paginated results
-function get_next_page(page_info, req){
-  let next_link = "NO MORE RESULTS";
-  let page_cursor = page_info.endCursor;
-  if (page_info.moreResults !== Datastore.NO_MORE_RESULTS){
-    next_link = req.protocol + "://" + req.get('host') 
-                + "/boats/page/" + encodeURIComponent(page_cursor);
-  }
-  return next_link
-}
 
-
-//------------------------LOGIN ROUTERS-----------------------------------
+//------------------------Auth0 Login ROUTERS-----------------------------------
+/*To get JWTs from auth0*/
 
 
 app.get('/', function(req, res) { 
@@ -284,10 +285,10 @@ app.post('/login', async function(req, res) {
     const password = req.body.password;
 
     //Get token to use the management API
-    const management_token = await get_management_token();
+    const management_token = await getManagementToken();
     
     //Check if user already exists
-    const users = await get_users(management_token);
+    const users = await getUsers(management_token);
     let found_user = false;
     for (let i = 0; i < users.length; i++){
       if (users[i].name === username){
@@ -298,11 +299,11 @@ app.post('/login', async function(req, res) {
     //If user doesn't exist, create one
     if (!found_user){
       if (DEBUG) console.log("No matching user found");
-      await create_user(username, password, management_token);
+      await createUser(username, password, management_token);
     } 
 
     //Get the JWT user token
-    const user_jwt = await get_user_token(username, password);
+    const user_jwt = await getUserToken(username, password);
 
     //Display the encrypted JWT in the browser
     res.render('user_info', { jwt: user_jwt });
@@ -315,6 +316,8 @@ app.post('/login', async function(req, res) {
 
 
 //-----------------------BOAT ROUTERS---------------------------------
+/*Represents boat entities. Protected and accessible only by user
+who created the entity.*/
 
 
 //Add boat router
@@ -379,7 +382,7 @@ app.get('/boats', checkJwt, async function(req, res) {
     if (DEBUG) console.log("Query results:", results);
     if (DEBUG) console.log("Owner's boats:", boats);
     attachSelfURLs(req, boats, 'boats');
-    const next_page_link = get_next_page(results[1], req);  //link to next page
+    const next_page_link = getNextPage(results[1], req);  //link to next page
     const total_results_count = results[2];  //total number of results of query without pagination
 
     //Build and send response
@@ -433,7 +436,7 @@ app.get('/boats/page/:page_cursor', checkJwt, async function(req, res) {
     if (DEBUG) console.log("Query results:", results);
     if (DEBUG) console.log("Owner's boats:", boats);
     attachSelfURLs(req, boats, 'boats');
-    const next_page_link = get_next_page(results[1], req);  //link to next page
+    const next_page_link = getNextPage(results[1], req);  //link to next page
     const total_results_count = results[2];  //total number of results of query without pagination
 
     //Build and send response
@@ -753,6 +756,8 @@ app.use(async function (err, req, res, next) {
 
 
 //-----------------------LOAD ROUTERS---------------------------------
+//Represents loads that can be loaded onto carriers (boats)
+//Unprotected entity
 
 
 //Add a load
@@ -918,6 +923,10 @@ app.delete('/loads/:id', async (req, res, next) => {
     next(error);
   }
 });
+
+
+//-------------BOAT & LOADER RELATIONSHIP ROUTERS---------------
+
 
 //assign load to boat
 app.put('/boats/:boat_id/loads/:load_id', async (req, res, next) => { 
