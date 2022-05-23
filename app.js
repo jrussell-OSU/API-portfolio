@@ -158,71 +158,31 @@ function attachID(entity){
 
 //Get list of all entities, attach self url and id before returning
 //includes pagination (optional)
-async function getEntities(kind, filter, page_size, page_cursor) {
+//Filters must be an array
+async function getEntities(kind, filters, page_size, page_cursor) {
 
   const query = datastore.createQuery(kind);
 
   //Build query based on given parameters
   if (page_cursor) query.start(page_cursor);
-  if (filter) query.filter(filter.property, filter.operator, filter.value);
   if (page_size) query.limit(page_size);
-  if (DEBUG) console.log("Query:", query);
+  if (filters)  //apply all filters
+    for (let i = 0; i < filters.length; i++)
+      query.filter(filters[i].property, filters[i].operator, filters[i].value);
+  if (DEBUG) console.log(query);
+  if (DEBUG) console.log("filters:", filters);
 
+  //Get results with pagination
   const results = await datastore.runQuery(query);
   if (DEBUG) console.log("Results:", results);
   const entities = results[0];
   const info = results[1];
 
-  return [entities.map(attachID), info];
-}
+  //Get total results count without pagination
+  const temp = await datastore.runQuery(query.limit(-1).start(null));
+  const total_results_count = temp[0].length;
 
-//Returns all public entities
-async function getPublicEntities(kind){
-  let query = datastore.createQuery(kind);
-  let all_entities = [];
-  await datastore.runQuery(query).then((entities) => {
-    all_entities = entities[0].map(attachID);
-  });
-  //if (DEBUG) console.log("all entities:", all_entities);
-  const private_entities = [];
-  for (let i = 0; i < all_entities.length; i++){
-    if (all_entities[i].public === true)
-      private_entities.push(all_entities[i]);
-  }
-  return private_entities;
-}
-
-//Returns all entities for an owner
-async function getOwnerEntities(kind, owner_id){
-  let query = datastore.createQuery(kind);
-  let all_entities = [];
-  await datastore.runQuery(query).then((entities) => {
-    all_entities = entities[0].map(attachID);
-  });
-  //if (DEBUG) console.log("all entities:", all_entities);
-  const owner_entities = [];
-  for (let i = 0; i < all_entities.length; i++){
-    if (all_entities[i].owner === owner_id)
-      owner_entities.push(all_entities[i]);
-  }
-  return owner_entities;
-}
-
-//Returns only public entities for an owner
-async function getOwnerPublicEntities(kind, owner_id){
-  let query = datastore.createQuery(kind);
-  let all_entities = [];
-  await datastore.runQuery(query).then((entities) => {
-    all_entities = entities[0].map(attachID);
-  });
-  if (DEBUG) console.log("all entities:", all_entities);
-  const owner_entities = [];
-  for (let i = 0; i < all_entities.length; i++){
-    if (all_entities[i].owner === owner_id &&
-        all_entities[i].public === true)
-      owner_entities.push(all_entities[i]);
-  }
-  return owner_entities;
+  return [entities.map(attachID), info, total_results_count];
 }
 
 //Get entity by ID
@@ -293,10 +253,21 @@ function validateRequestData(req_body){
   return error;
 }
 
+//Builds a "next page" link for paginated results
+function get_next_page(page_info, req){
+  let next_link = "NO MORE RESULTS";
+  let page_cursor = page_info.endCursor;
+  if (page_info.moreResults !== Datastore.NO_MORE_RESULTS){
+    next_link = req.protocol + "://" + req.get('host') 
+                + "/boats/page/" + encodeURIComponent(page_cursor);
+  }
+  return next_link
+}
+
+
 //------------------------ROUTERS-----------------------------------
 
 
-//Render the home page
 app.get('/', function(req, res) { 
   res.render('home');
 });
@@ -380,42 +351,36 @@ app.use(function (err, req, res, next) {
   }
 });
 
-//Get all boats (public and private) for owner if valid JWT
-app.get('/owners/:owner_id/boats/:page_cursor?', checkJwt, async function(req, res){
+//If JWT valid, return all boats associated with that owner
+app.get('/boats', checkJwt, async function(req, res) {
   try{
-    //Set up query filter
-    const owner_id = req.params.owner_id;
-    const filter = {
-      property: "owner",
-      operator: "=",
-      value: owner_id
-    };  
-    let page_cursor = null;
-    if (req.params.page_cursor) page_cursor = req.params.page_cursor;
-    if (DEBUG) console.log("Page cursor:", page_cursor);
-    const page_size = 5;
 
-    //Get boat entities 
-    const results = await getEntities('boat', filter, page_size, page_cursor);
+    //Build paramaters to run the entity query 
+    const owner_id = req.auth.sub
+    const filter = [  //build query filters
+      {
+        property: "owner",
+        operator: "=",
+        value: owner_id 
+      }
+    ];  
+
+    //Run query and get paginated boat entities 
+    const results = await getEntities('boat', filter, 5, null);
     const boats = results[0];
-    page_cursor = results[1].endCursor;
     if (DEBUG) console.log("Query results:", results);
     if (DEBUG) console.log("Owner's boats:", boats);
     attachSelfURLs(req, boats, 'boats');
+    const next_page_link = get_next_page(results[1], req);  //link to next page
+    const total_results_count = results[2];  //total number of results of query without pagination
 
-    //Add next page link if there is one
-    let next_link = "NO MORE RESULTS";
-    if (results[1].moreResults !== Datastore.NO_MORE_RESULTS){
-      next_link = req.protocol + "://" + req.get('host') 
-                  + "/owners/" + owner_id + "/boats/"
-                  + encodeURIComponent(page_cursor);
-    }
-
-    const resp = {
+    //Build and send response
+    const entities_with_pagination = {
       "boats": boats,
-      "next": next_link
-    }
-    res.status(200).send(resp);
+      "total entity count": total_results_count,
+      "next page": next_page_link
+    };
+    res.status(200).send(entities_with_pagination);
 
   } catch (error) {
     if (DEBUG) console.log(error);
@@ -423,44 +388,294 @@ app.get('/owners/:owner_id/boats/:page_cursor?', checkJwt, async function(req, r
   }
 });
 
-//If JWT invalid, return only owner's *public* boats
+//If JWT invalid, return an error
 app.use(async function (err, req, res, next) {
   console.error(err);
   if (err.name === "UnauthorizedError") {
-    if (DEBUG) console.log("bad jwt for get owner's boats request, return only owner's public boats");
-    const owner_id = req.url.slice(8, 38);
-    const boats = await getOwnerPublicEntities('boat', owner_id);
-    if (DEBUG) console.log("owner's public boats boats:", boats);
-    attachSelfURLs(req, boats, 'boats');
-    res.status(200).send(boats);
+    if (DEBUG) console.log("Invalid JWT token, unauthorized to view boats")
+    res
+      .status(401)
+      .send({ "Error": "Invalid JWT. Must have valid authorization to view boats."});
   } else {
       next(err);
   }
 });
 
 //If JWT valid, return all boats associated with that owner
-app.get('/boats', checkJwt, async function(req, res) {
+//(For subsequent pages)
+app.get('/boats/page/:page_cursor', checkJwt, async function(req, res) {
   try{
-    const owner_id = req.auth.sub;
-    const boats = await getOwnerEntities('boat', owner_id);
-    if (DEBUG) console.log("All owner's boats:", boats);
+
+    //Build paramaters to run the entity query 
+    const owner_id = req.auth.sub
+    const filter = [  //build query filters
+      {
+        property: "owner",
+        operator: "=",
+        value: owner_id 
+      }
+    ];  
+    let page_cursor = null;
+    if (req.params.page_cursor) page_cursor = req.params.page_cursor;  //get page cursor
+    if (DEBUG) console.log("Page cursor:", page_cursor);
+
+    //Run query and get paginated boat entities 
+    const results = await getEntities('boat', filter, 5, page_cursor);
+    const boats = results[0];
+    if (DEBUG) console.log("Query results:", results);
+    if (DEBUG) console.log("Owner's boats:", boats);
     attachSelfURLs(req, boats, 'boats');
-    res.status(200).send(boats);
+    const next_page_link = get_next_page(results[1], req);  //link to next page
+    const total_results_count = results[2];  //total number of results of query without pagination
+
+    //Build and send response
+    const entities_with_pagination = {
+      "boats": boats,
+      "total entity count": total_results_count,
+      "next page": next_page_link
+    };
+    res.status(200).send(entities_with_pagination);
+
+  } catch (error) {
+    if (DEBUG) console.log(error);
+    res.send(error);
+  }
+});
+
+//If JWT invalid, return an error
+app.use(async function (err, req, res, next) {
+  console.error(err);
+  if (err.name === "UnauthorizedError") {
+    if (DEBUG) console.log("Invalid JWT token, unauthorized to view boats")
+    res
+      .status(401)
+      .send({ "Error": "Invalid JWT. Must have valid authorization to view boats."});
+  } else {
+      next(err);
+  }
+});
+
+//If JWT valid, return boat with given id 
+app.get('/boats/:boat_id', checkJwt, async function(req, res) {
+  try{
+    
+    //Build paramaters to run the entity query 
+    const owner_id = req.auth.sub;
+    const boat_id = req.params.boat_id;
+
+    const [boat] = await getEntity('boat', boat_id);
+
+    if (!boat){
+      if (DEBUG) console.log("No boat found with given id!");
+      res.status(404).send({"Error": "No boat found for given ID"});
+      return;
+    }
+
+    if (boat.owner !== owner_id){
+      res.status(401).send({"Error": "Boat belongs to another user"});
+      return;
+    }
+
+    if (DEBUG) console.log("Found boat:", boat);
+    attachSelfURL(req, boat, 'boats');
+    res.status(200).send(boat);
   } catch(error){
     if (DEBUG) console.log(error);
     res.send(error);
   }
 });
 
-//If JWT invalid, return all public boats from all owners
+//If JWT invalid, return an error
 app.use(async function (err, req, res, next) {
   console.error(err);
   if (err.name === "UnauthorizedError") {
-    if (DEBUG) console.log("Invalid JWT token, responding with all public boats.")
-    const boats = await getPublicEntities('boat');
-    if (DEBUG) console.log("all public boats boats:", boats);
-    attachSelfURLs(req, boats, 'boats');
-    res.status(200).send(boats);
+    if (DEBUG) console.log("Invalid JWT token, unauthorized to view boats")
+    res
+      .status(401)
+      .send({ "Error": "Invalid JWT. Must have valid authorization to view boats."});
+  } else {
+      next(err);
+  }
+});
+
+//Update SOME of a boat's attributes
+app.patch('/boats/:id', async (req, res, next) => {
+  try {
+
+    let status_code = null;
+    let error = null;
+    
+    //Validate that request input data is valid
+    error = validateRequestData(req);
+    if (error){
+      if (DEBUG) console.log("Invalid request input data")
+      res.status(400).send(error);
+      return;
+    }
+
+    const boat_update = req.body;
+
+    //Validate request and response content-types are valid
+    [status_code, error] = validateContentType(req, "application/json");
+    if (status_code || error){
+      if (DEBUG) console.log("Content type error found");
+      res.status(status_code).send(error);
+      return;
+    }
+
+    //ID must not be edited by this request
+    if (boat_update.id){
+      if (DEBUG) console.log("Cannot change ID");
+      status_code = 400;
+      error = {"Error": "Changing ID of entity is forbidden"}
+      res.status(status_code).send(error);
+      return;
+    }
+
+    //Must not be updating ALL attributes (that's for PUT not PATCH)
+    if (boat_update.name && boat_update.type && boat_update.length){
+      if (DEBUG) console.log("Update failed. PATCH updates only some attributes. Use PUT to edit ALL attributes.");
+      status_code = 400;
+      error = {"Error": "Cannot use PATCH to update all attributes. Use PUT instead."}
+      res.status(status_code).send(error);
+      return;
+    }
+
+    //Try to find boat with given ID
+    if (DEBUG) console.log("Looking for ID:", req.params.id);
+    const [boat] = await getEntity('boat', req.params.id);
+    if (!boat){
+      if (DEBUG) console.log(`No boat with ID ${req.params.id} found.`);
+      status_code = 404;
+      error = {"Error": "No boat with this boat_id exists"};
+      res.status(status_code).send(error);   
+      return;  
+    }
+
+    //Verify boat belongs to this user
+    if (DEBUG) console.log("Verifying owner is correct");
+    const owner_id = req.auth.sub;
+    if (boat.owner !== owner_id){
+      if (DEBUG) console.log("User does not own this boat! Patch request denied.");
+      res.status(401).send({"Error": "You cannot edit someone else's boat."});
+      return;
+    }
+      
+    //if request is OK, update boat (only update attributes from request)
+    if (boat_update.name)
+      boat.name = boat_update.name;
+    if (boat_update.type)
+      boat.type = boat_update.type;
+    if (boat_update.length)
+      boat.length = boat_update.length;
+    await datastore.update(boat);
+    status_code = 200;
+    res.status(status_code).send(attachID(boat));
+
+    } catch (error) {
+      next(error);
+    }
+});
+
+//If JWT invalid, return an error
+app.use(async function (err, req, res, next) {
+  console.error(err);
+  if (err.name === "UnauthorizedError") {
+    if (DEBUG) console.log("Invalid JWT token, unauthorized to view boats")
+    res
+      .status(401)
+      .send({ "Error": "Invalid JWT. Must have valid authorization to view boats."});
+  } else {
+      next(err);
+  }
+});
+
+//Update ALL of a boat's attributes
+app.put('/boats/:id', async (req, res, next) => {
+  try {
+
+    let status_code = null;
+    let error = null;
+    
+    //Validate that request input data is valid
+    error = validateRequestData(req);
+    if (error){
+      if (DEBUG) console.log("Invalid request input data")
+      res.status(400).send(error);
+      return;
+    }
+
+    const boat_update = req.body;
+
+    //Validate request and response content-types are valid
+    [status_code, error] = validateContentType(req, "application/json");
+    if (status_code || error){
+      if (DEBUG) console.log("Content type error found");
+      res.status(status_code).send(error);
+      return;
+    }
+
+    //Must be updating ALL attributes (otherwise should use PATCH)
+    if (!boat_update.name || !boat_update.type || !boat_update.length){
+      if (DEBUG) console.log("Update failed. Required attributes missing. PUT must update all attributes.");
+      status_code = 400;
+      error = {"Error": "Request missing at least one required attritube to update. Must update all attributes."}
+      res.status(status_code).send(error);
+      return;
+    }
+
+    //ID must not be edited by this request
+    if (boat_update.id){
+      if (DEBUG) console.log("Cannot change ID");
+      status_code = 400;
+      error = {"Error": "Changing ID of entity is forbidden"}
+      res.status(status_code).send(error);
+      return;
+    }
+
+    //Try to find boat with given ID
+    console.log("Looking for ID:", req.params.id);
+    const [boat] = await getEntity('boat', req.params.id);
+    if (!boat){
+      if (DEBUG) console.log(`No boat with ID ${req.params.id} found.`);
+      status_code = 404;
+      error = {"Error": "No boat with this boat_id exists"};
+      res.status(status_code).send(error);   
+      return;  
+    }
+
+    //Check for duplicate boat names
+    const is_unique_name = await uniqueNameCheck(boat_update.name, 'boat');
+    if (!is_unique_name){
+      if (DEBUG) console.log("Name is a duplicate, boat not added.");
+      status_code = 403;
+      error = {"Error": "Duplicate names not allowed."};
+      res.status(403).send(error);
+      return;
+    }
+
+    //if request is OK, update boat
+    boat.name = boat_update.name;
+    boat.type = boat_update.type;
+    boat.length = boat_update.length;
+    await datastore.update(boat);
+    status_code = 303;
+    const location = getSelfURL(req, boat, 'boats');  //put self URL for entity in content-location header
+    res.set("Content-Location", location).status(status_code).send(attachID(boat));
+
+    } catch (error) {
+      next(error);
+    }
+});
+
+//If JWT invalid, return an error
+app.use(async function (err, req, res, next) {
+  console.error(err);
+  if (err.name === "UnauthorizedError") {
+    if (DEBUG) console.log("Invalid JWT token, unauthorized to view boats")
+    res
+      .status(401)
+      .send({ "Error": "Invalid JWT. Must have valid authorization to view boats."});
   } else {
       next(err);
   }
