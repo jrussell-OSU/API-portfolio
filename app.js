@@ -20,8 +20,8 @@ const { auth } = require('express-openid-connect');
 const { engine } = require('express-handlebars');
 const config = require('./secrets/config.json')
 const bodyParser = require('body-parser');
+const jwt_decoder = require('jwt-decode');
 const axios = require('axios');
-const super_string = require('@supercharge/strings');  //use with .random() to create random strings
 const { expressjwt: jwt } = require('express-jwt');
 const jwksRsa = require('jwks-rsa');
 
@@ -243,10 +243,10 @@ function validateContentType(req, accepted_types){
     error = {"Error": "Not accepted response content-type. Must be application/json."};
   }
   
-  if (req.get('content-type') !== 'application/json'){
-    status_code = 415;
-    error = {"Error": "Invalid request content-type. Must be application/json."};
-  }
+  //if (req.get('content-type') !== 'application/json'){
+    //status_code = 415;
+    //error = {"Error": "Invalid request content-type. Must be application/json."};
+  //}
   return [status_code, error];
 }
 
@@ -269,10 +269,11 @@ function validateRequestData(req_body){
 }
 
 
-//------------------------Auth0 ROUTERS-----------------------------------
+//--------------------Auth0 Login ROUTERS-----------------------------------
+
+
+
 /*To get JWTs from auth0*/
-
-
 app.get('/', function(req, res) { 
   res.render('home');
 });
@@ -305,13 +306,59 @@ app.post('/login', async function(req, res) {
     //Get the JWT user token
     const user_jwt = await getUserToken(username, password);
 
+    //Decode JWT
+    const jwt_decoded = jwt_decoder(user_jwt);
+
+    //Store user in database if new user
+    if (!found_user){
+      const user = {
+        "name": jwt_decoded.name,
+        "sub": jwt_decoded.sub
+      }
+      await addEntity('user', user);
+    }
+
     //Display the encrypted JWT in the browser
-    res.render('user_info', { jwt: user_jwt, username: username });
+    res.render('user_info', { 
+      jwt: user_jwt, 
+      name: jwt_decoded.name,
+      sub: jwt_decoded.sub
+    });
 
   } catch (error) {
     if (DEBUG) console.log(error);
     res.status(error.response.status).send(error.response.data);
   }
+});
+
+
+
+//--------------------------USER ROUTERS---------------------------
+
+
+//Returns all users
+app.get('/users', async function(req, res) {
+    //Validate "accepts" is application/json
+    let status_code = null;
+    let error = null;
+    [status_code, error] = validateContentType(req, 'application/json');
+    //console.log("accepts content:", results);
+    if (error){
+      if (DEBUG) console.log("Invalid request accepts type")
+      res.status(406).send(error);
+      return;
+    }
+
+  const results = await getEntities('user');
+  const users = results[0];
+  if (DEBUG) console.log("All users:", users);
+  attachSelfURLs(req, users, 'users');
+  res.status(200).send(users);
+});
+
+//If attempt is made to delete loads root URL, 405 error
+app.delete('/loads', async (req,res,next) => {
+  res.sendStatus(405).end();
 });
 
 
@@ -325,14 +372,15 @@ app.post('/boats', checkJwt, async function(req, res){
   
   try {
 
+
+    //Validate "accepts" is application/json
     let status_code = null;
     let error = null;
-
-    //Validate that request input data is valid
-    error = validateRequestData(req.body);
+    [status_code, error] = validateContentType(req, 'application/json');
+    //console.log("accepts content:", results);
     if (error){
-      if (DEBUG) console.log("Invalid request input data")
-      res.status(400).send(error);
+      if (DEBUG) console.log("Invalid request accepts type")
+      res.status(406).send(error);
       return;
     }
 
@@ -366,6 +414,17 @@ app.use(function (err, req, res, next) {
 //If JWT valid, return all boats associated with that owner
 app.get('/boats', checkJwt, async function(req, res) {
   try{
+
+    //Validate "accepts" is application/json
+    let status_code = null;
+    let error = null;
+    [status_code, error] = validateContentType(req, 'application/json');
+    //console.log("accepts content:", results);
+    if (error){
+      if (DEBUG) console.log("Invalid request accepts type")
+      res.status(status_code).send(error);
+      return;
+    }
 
     //Build paramaters to run the entity query 
     const owner_id = req.auth.sub
@@ -417,6 +476,17 @@ app.use(async function (err, req, res, next) {
 //(For subsequent pages)
 app.get('/boats/page/:page_cursor', checkJwt, async function(req, res) {
   try{
+
+    //Validate "accepts" is application/json
+    let status_code = null;
+    let error = null;
+    [status_code, error] = validateContentType(req, 'application/json');
+    //console.log("accepts content:", results);
+    if (error){
+      if (DEBUG) console.log("Invalid request accepts type")
+      res.status(status_code).send(error);
+      return;
+    }
 
     //Build paramaters to run the entity query 
     const owner_id = req.auth.sub
@@ -471,6 +541,17 @@ app.use(async function (err, req, res, next) {
 app.get('/boats/:boat_id', checkJwt, async function(req, res) {
   try{
     
+    //Validate "accepts" is application/json
+    let status_code = null;
+    let error = null;
+    [status_code, error] = validateContentType(req, 'application/json');
+    //console.log("accepts content:", results);
+    if (error){
+      if (DEBUG) console.log("Invalid request accepts type")
+      res.status(status_code).send(error);
+      return;
+    }
+
     //Build paramaters to run the entity query 
     const owner_id = req.auth.sub;
     const boat_id = req.params.boat_id;
@@ -515,26 +596,18 @@ app.use(async function (err, req, res, next) {
 app.patch('/boats/:id', checkJwt, async (req, res, next) => {
   try {
 
+    //Validate "accepts" is application/json
     let status_code = null;
     let error = null;
-    
-    //Validate that request input data is valid
-    error = validateRequestData(req);
+    [status_code, error] = validateContentType(req, 'application/json');
+    //console.log("accepts content:", results);
     if (error){
-      if (DEBUG) console.log("Invalid request input data")
-      res.status(400).send(error);
+      if (DEBUG) console.log("Invalid request accepts type")
+      res.status(status_code).send(error);
       return;
     }
 
     const boat_update = req.body;
-
-    //Validate request and response content-types are valid
-    [status_code, error] = validateContentType(req, "application/json");
-    if (status_code || error){
-      if (DEBUG) console.log("Content type error found");
-      res.status(status_code).send(error);
-      return;
-    }
 
     //ID must not be edited by this request
     if (boat_update.id){
@@ -610,26 +683,18 @@ app.use(async function (err, req, res, next) {
 app.put('/boats/:id', checkJwt, async (req, res, next) => {
   try {
 
+    //Validate "accepts" is application/json
     let status_code = null;
     let error = null;
-    
-    //Validate that request input data is valid
-    error = validateRequestData(req);
+    [status_code, error] = validateContentType(req, 'application/json');
+    //console.log("accepts content:", results);
     if (error){
-      if (DEBUG) console.log("Invalid request input data")
-      res.status(400).send(error);
+      if (DEBUG) console.log("Invalid request accepts type")
+      res.status(status_code).send(error);
       return;
     }
 
     const boat_update = req.body;
-
-    //Validate request and response content-types are valid
-    [status_code, error] = validateContentType(req, "application/json");
-    if (status_code || error){
-      if (DEBUG) console.log("Content type error found");
-      res.status(status_code).send(error);
-      return;
-    }
 
     //Must be updating ALL attributes (otherwise should use PATCH)
     if (!boat_update.name || !boat_update.type || !boat_update.length){
@@ -773,6 +838,11 @@ app.use(async function (err, req, res, next) {
 });
 
 
+//If attempt is made to delete boat root URL, 405 error
+app.delete('/boats', async (req,res,next) => {
+  res.sendStatus(405).end();
+});
+
 //-----------------------LOAD ROUTERS---------------------------------
 //Represents loads that can be loaded onto carriers (boats)
 //Unprotected entity
@@ -782,6 +852,18 @@ app.use(async function (err, req, res, next) {
 
 
 app.post('/loads', async (req, res, next) => {
+  
+    //Validate "accepts" is application/json
+    let status_code = null;
+    let error = null;
+    [status_code, error] = validateContentType(req, 'application/json');
+    //console.log("accepts content:", results);
+    if (error){
+      if (DEBUG) console.log("Invalid request accepts type")
+      res.status(status_code).send(error);
+      return;
+    }
+
   console.log("Adding load:", req.body);
   const load_info = req.body;
   load_info.carrier = null;  //loads always start with no carrier (boat)
@@ -814,6 +896,19 @@ app.post('/loads', async (req, res, next) => {
 //Get list of all loads (first page, no cursor given)
 app.get('/loads', async (req, res, next) => {
   try {
+
+    //Validate "accepts" is application/json
+    let status_code = null;
+    let error = null;
+    [status_code, error] = validateContentType(req, 'application/json');
+    //console.log("accepts content:", results);
+    if (error){
+      if (DEBUG) console.log("Invalid request accepts type")
+      res.status(status_code).send(error);
+      return;
+    }
+
+
     let results = await getEntities('load', null, 5, null);
     const info = results[1];
     const loads = results[0];
@@ -842,6 +937,18 @@ app.get('/loads', async (req, res, next) => {
 //Get list of all loads if a cursor is given for pagination
 app.get('/loads/page/:page_cursor', async (req, res, next) => {
   try {
+
+    //Validate "accepts" is application/json
+    let status_code = null;
+    let error = null;
+    [status_code, error] = validateContentType(req, 'application/json');
+    //console.log("accepts content:", results);
+    if (error){
+      if (DEBUG) console.log("Invalid request accepts type")
+      res.status(status_code).send(error);
+      return;
+    }
+
     let results = await getEntities('load', null, 5, req.params.page_cursor);
     const info = results[1];
     const loads = results[0];
@@ -870,6 +977,18 @@ app.get('/loads/page/:page_cursor', async (req, res, next) => {
 //Get load by ID
 app.get('/loads/:id', async (req, res, next) => {
   try {
+
+    //Validate "accepts" is application/json
+    let status_code = null;
+    let error = null;
+    [status_code, error] = validateContentType(req, 'application/json');
+    //console.log("accepts content:", results);
+    if (error){
+      if (DEBUG) console.log("Invalid request accepts type")
+      res.status(status_code).send(error);
+      return;
+    }
+
     console.log("Looking for ID:", req.params.id);
     const [load] = await getEntity('load', req.params.id);
     if (!load){
@@ -898,26 +1017,18 @@ app.get('/loads/:id', async (req, res, next) => {
 app.patch('/loads/:id', checkJwt, async (req, res, next) => {
   try {
 
+    //Validate "accepts" is application/json
     let status_code = null;
     let error = null;
-    
-    //Validate that request input data is valid
-    error = validateRequestData(req);
+    [status_code, error] = validateContentType(req, 'application/json');
+    //console.log("accepts content:", results);
     if (error){
-      if (DEBUG) console.log("Invalid request input data")
-      res.status(400).send(error);
+      if (DEBUG) console.log("Invalid request accepts type")
+      res.status(status_code).send(error);
       return;
     }
 
     const load_update = req.body;
-
-    //Validate request and response content-types are valid
-    [status_code, error] = validateContentType(req, "application/json");
-    if (status_code || error){
-      if (DEBUG) console.log("Content type error found");
-      res.status(status_code).send(error);
-      return;
-    }
 
     //ID must not be edited by this request
     if (load_update.id){
@@ -980,26 +1091,18 @@ app.patch('/loads/:id', checkJwt, async (req, res, next) => {
 app.put('/loads/:id', checkJwt, async (req, res, next) => {
   try {
 
+    //Validate "accepts" is application/json
     let status_code = null;
     let error = null;
-    
-    //Validate that request input data is valid
-    error = validateRequestData(req);
+    [status_code, error] = validateContentType(req, 'application/json');
+    //console.log("accepts content:", results);
     if (error){
-      if (DEBUG) console.log("Invalid request input data")
-      res.status(400).send(error);
+      if (DEBUG) console.log("Invalid request accepts type")
+      res.status(status_code).send(error);
       return;
     }
 
     const load_update = req.body;
-
-    //Validate request and response content-types are valid
-    [status_code, error] = validateContentType(req, "application/json");
-    if (status_code || error){
-      if (DEBUG) console.log("Content type error found");
-      res.status(status_code).send(error);
-      return;
-    }
 
     //ID must not be edited by this request
     if (load_update.id){
@@ -1105,6 +1208,13 @@ app.delete('/loads/:id', async (req, res, next) => {
 });
 
 
+//If attempt is made to delete loads root URL, 405 error
+app.delete('/loads', async (req,res,next) => {
+  res.sendStatus(405).end();
+});
+
+
+
 //-------------BOAT & LOADER RELATIONSHIP ROUTERS---------------
 //Protected, accessible by boat owner
 
@@ -1112,6 +1222,18 @@ app.delete('/loads/:id', async (req, res, next) => {
 
 app.get('/boats/:boat_id/loads/', checkJwt, async (req, res, next) => {
   try{
+    //Validate "accepts" is application/json
+    let status_code = null;
+    let error = null;
+    [status_code, error] = validateContentType(req, 'application/json');
+    //console.log("accepts content:", results);
+    if (error){
+      if (DEBUG) console.log("Invalid request accepts type")
+      res.status(status_code).send(error);
+      return;
+    }
+    
+    
     //Get the requested boat
     const [boat] = await getEntity('boat', req.params.boat_id);
     console.log("Found boat:", boat);
