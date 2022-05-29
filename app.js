@@ -269,7 +269,7 @@ function validateRequestData(req_body){
 }
 
 
-//------------------------Auth0 Login ROUTERS-----------------------------------
+//------------------------Auth0 ROUTERS-----------------------------------
 /*To get JWTs from auth0*/
 
 
@@ -306,7 +306,7 @@ app.post('/login', async function(req, res) {
     const user_jwt = await getUserToken(username, password);
 
     //Display the encrypted JWT in the browser
-    res.render('user_info', { jwt: user_jwt });
+    res.render('user_info', { jwt: user_jwt, username: username });
 
   } catch (error) {
     if (DEBUG) console.log(error);
@@ -338,6 +338,7 @@ app.post('/boats', checkJwt, async function(req, res){
 
     if (DEBUG) console.log(req.auth);
     const boat_info = req.body;
+    boat_info.loads = [];
     boat_info.owner = req.auth.sub;
     if (DEBUG) console.log("Adding boat:", req.body);
     const boat = await addEntity('boat', req.body);
@@ -489,6 +490,7 @@ app.get('/boats/:boat_id', checkJwt, async function(req, res) {
 
     if (DEBUG) console.log("Found boat:", boat);
     attachSelfURL(req, boat, 'boats');
+    attachID(boat);
     res.status(200).send(boat);
   } catch(error){
     if (DEBUG) console.log(error);
@@ -581,7 +583,9 @@ app.patch('/boats/:id', checkJwt, async (req, res, next) => {
       boat.length = boat_update.length;
     await datastore.update(boat);
     status_code = 200;
-    res.status(status_code).send(attachID(boat));
+    attachSelfURL(req, boat, 'boats');
+    attachID(boat);
+    res.status(status_code).send(boat);
 
   } catch(error){
     if (DEBUG) console.log(error);
@@ -671,8 +675,11 @@ app.put('/boats/:id', checkJwt, async (req, res, next) => {
     boat.length = boat_update.length;
     await datastore.update(boat);
     status_code = 303;
-    const location = getSelfURL(req, boat, 'boats');  //put self URL for entity in content-location header
-    res.set("Content-Location", location).status(status_code).send(attachID(boat));
+    attachSelfURL(req, boat, 'boats');
+    attachID(boat);
+    res
+      .status(status_code)
+      .send(boat);
 
     } catch (error) {
       next(error);
@@ -724,6 +731,17 @@ app.delete('/boats/:boat_id', checkJwt, async function(req, res) {
         return;
     }
 
+    //Unload any loads before deleting the boat
+    const loads = boat.loads;
+    if (DEBUG) console.log("Removing these loads from boat before deleting:", loads);
+    for (let i = 0; i < loads.length; i++){
+      //if (DEBUG) console.log("current load:", loads[i].id);
+      let [load] = await getEntity('load', loads[i].id);
+      //if (DEBUG) console.log("Removing carrier from load:", load);
+      load.carrier = null;
+      await datastore.update(load);
+    }
+
     //If request OK, delete the boat
     const boat_key = boat[Datastore.KEY];
     datastore.delete(boat_key, (err, apiResp) => {
@@ -761,6 +779,8 @@ app.use(async function (err, req, res, next) {
 
 
 //Add a load
+
+
 app.post('/loads', async (req, res, next) => {
   console.log("Adding load:", req.body);
   const load_info = req.body;
@@ -794,7 +814,7 @@ app.post('/loads', async (req, res, next) => {
 //Get list of all loads (first page, no cursor given)
 app.get('/loads', async (req, res, next) => {
   try {
-    let results = await getEntities('load');
+    let results = await getEntities('load', null, 5, null);
     const info = results[1];
     const loads = results[0];
     const cursor = info.endCursor;
@@ -822,7 +842,7 @@ app.get('/loads', async (req, res, next) => {
 //Get list of all loads if a cursor is given for pagination
 app.get('/loads/page/:page_cursor', async (req, res, next) => {
   try {
-    let results = await getEntities('load', req.params.page_cursor);
+    let results = await getEntities('load', null, 5, req.params.page_cursor);
     const info = results[1];
     const loads = results[0];
     const cursor = info.endCursor;
@@ -873,6 +893,166 @@ app.get('/loads/:id', async (req, res, next) => {
       next(error);
     }
 });
+
+//Update some of a load's attributes
+app.patch('/loads/:id', checkJwt, async (req, res, next) => {
+  try {
+
+    let status_code = null;
+    let error = null;
+    
+    //Validate that request input data is valid
+    error = validateRequestData(req);
+    if (error){
+      if (DEBUG) console.log("Invalid request input data")
+      res.status(400).send(error);
+      return;
+    }
+
+    const load_update = req.body;
+
+    //Validate request and response content-types are valid
+    [status_code, error] = validateContentType(req, "application/json");
+    if (status_code || error){
+      if (DEBUG) console.log("Content type error found");
+      res.status(status_code).send(error);
+      return;
+    }
+
+    //ID must not be edited by this request
+    if (load_update.id){
+      if (DEBUG) console.log("Cannot change ID");
+      status_code = 400;
+      error = {"Error": "Changing ID of entity is forbidden"}
+      res.status(status_code).send(error);
+      return;
+    }
+
+    //Must not be updating ALL attributes (that's for PUT not PATCH)
+    if (load_update.volume && load_update.item && load_update.creation_date){
+      if (DEBUG) console.log("Update failed. PATCH updates only some attributes. Use PUT to edit ALL attributes.");
+      status_code = 400;
+      error = {"Error": "Cannot use PATCH to update all attributes. Use PUT instead."}
+      res.status(status_code).send(error);
+      return;
+    }
+
+    //Try to find load with given ID
+    if (DEBUG) console.log("Looking for ID:", req.params.id);
+    const [load] = await getEntity('load', req.params.id);
+    if (!load){
+      if (DEBUG) console.log(`No load with ID ${req.params.id} found.`);
+      status_code = 404;
+      error = {"Error": "No load with this load_id exists"};
+      res.status(status_code).send(error);   
+      return;  
+    }
+
+    //If load on carrier, verify boat owner is editing load
+    if (DEBUG) console.log("Verifying owner is correct");
+    const owner_id = req.auth.sub;
+    if (load.carrier.owner !== owner_id){
+      if (DEBUG) console.log("User does not own this boat! Load patch request denied.");
+      res.status(401).send({"Error": "You cannot edit loads on boats you do not own."});
+      return;
+    }
+      
+    //if request is OK, update load (only update attributes from request)
+    if (load_update.volume)
+      load.volume = load_update.volume;
+    if (load_update.item)
+      load.item = load_update.item;
+    if (load_update.creation_date)
+      load.creation_date = load_update.creation_date;
+    await datastore.update(load);
+    status_code = 200;
+    attachID(load);
+    attachSelfURL(req, load, 'loads');
+    res.status(status_code).send(load);
+
+  } catch(error){
+    if (DEBUG) console.log(error);
+    res.send(error);
+  }
+});
+
+//Update all of a load's attributes
+app.put('/loads/:id', checkJwt, async (req, res, next) => {
+  try {
+
+    let status_code = null;
+    let error = null;
+    
+    //Validate that request input data is valid
+    error = validateRequestData(req);
+    if (error){
+      if (DEBUG) console.log("Invalid request input data")
+      res.status(400).send(error);
+      return;
+    }
+
+    const load_update = req.body;
+
+    //Validate request and response content-types are valid
+    [status_code, error] = validateContentType(req, "application/json");
+    if (status_code || error){
+      if (DEBUG) console.log("Content type error found");
+      res.status(status_code).send(error);
+      return;
+    }
+
+    //ID must not be edited by this request
+    if (load_update.id){
+      if (DEBUG) console.log("Cannot change ID");
+      status_code = 400;
+      error = {"Error": "Changing ID of entity is forbidden"}
+      res.status(status_code).send(error);
+      return;
+    }
+
+    //Verify all attributes being updated (not just some)
+    if (DEBUG) console.log("Verifying all attributes being updated");
+    if (!load_update.volume || !load_update.item || !load_update.creation_date){
+      if (DEBUG) console.log("Update failed. PUT updates all attributes. Use PATCH to edit some attributes.");
+      status_code = 400;
+      error = {"Error": "Cannot use PUT to update some attributes. Use PATCH instead."}
+      res.status(status_code).send(error);
+      return;
+    }
+
+    //Try to find load with given ID
+    if (DEBUG) console.log("Looking for ID:", req.params.id);
+    const [load] = await getEntity('load', req.params.id);
+    if (!load){
+      if (DEBUG) console.log(`No load with ID ${req.params.id} found.`);
+      status_code = 404;
+      error = {"Error": "No load with this load_id exists"};
+      res.status(status_code).send(error);   
+      return;  
+    }
+
+    //If load on carrier, verify boat owner is editing load
+    if (DEBUG) console.log("Verifying owner is correct");
+    const owner_id = req.auth.sub;
+    if (load.carrier.owner !== owner_id){
+      if (DEBUG) console.log("User does not own this boat! Load patch request denied.");
+      res.status(401).send({"Error": "You cannot edit loads on boats you do not own."});
+      return;
+    }
+
+    //if request is OK, update load
+    await datastore.update(load);
+    status_code = 303;
+    attachID(load);
+    attachSelfURL(req, load, 'loads');
+    res.status(status_code).send(load);
+
+  } catch(error){
+    if (DEBUG) console.log(error);
+    res.send(error);
+  }
+});
+
 
 //Delete a load
 app.delete('/loads/:id', async (req, res, next) => { 
@@ -926,10 +1106,57 @@ app.delete('/loads/:id', async (req, res, next) => {
 
 
 //-------------BOAT & LOADER RELATIONSHIP ROUTERS---------------
+//Protected, accessible by boat owner
 
+
+
+app.get('/boats/:boat_id/loads/', checkJwt, async (req, res, next) => {
+  try{
+    //Get the requested boat
+    const [boat] = await getEntity('boat', req.params.boat_id);
+    console.log("Found boat:", boat);
+
+    //Make sure requested boat exists
+    if (!boat){
+      console.log("boat doesn't exist");
+      res
+        .status(404)
+        .set('Content-Type', 'application/json')
+        .send({"Error": "The specified boat does not exist"})
+      return;    
+    }
+
+    //Make sure boat belongs to this user
+    const owner_id = req.auth.sub;
+    if (boat.owner !== owner_id){
+      res.status(401).send({"Error": "Boat belongs to another user"});
+      return;
+    }
+
+    //Get and return all loads from this boat
+    const loads = [];
+    for (let i = 0; i < boat.loads.length; i++){
+      let [load] = await getEntity('load', boat.loads[i].id);
+      attachID(load);
+      attachSelfURL(req, load, 'loads');
+      loads.push(load);
+    }
+    if (DEBUG) console.log("All loads for boat:", loads);
+
+    res
+      .status(200)
+      .set('Content-Type', 'application/json')   
+      .send(loads);
+    return;
+
+  } catch(error){
+    console.log(error);
+    next(error);
+  }
+});
 
 //assign load to boat
-app.put('/boats/:boat_id/loads/:load_id', async (req, res, next) => { 
+app.put('/boats/:boat_id/loads/:load_id', checkJwt, async (req, res, next) => { 
   try{
     //Get the requested load
     const [load] = await getEntity('load', req.params.load_id);
@@ -947,6 +1174,13 @@ app.put('/boats/:boat_id/loads/:load_id', async (req, res, next) => {
         .set('Content-Type', 'application/json')
         .send({"Error": "The specified boat and/or load does not exist"})
         .end();      
+    }
+
+    //Make sure boat belongs to this user
+    const owner_id = req.auth.sub;
+    if (boat.owner !== owner_id){
+      res.status(401).send({"Error": "Boat belongs to another user"});
+      return;
     }
 
     //If load already assigned to another boat
@@ -969,7 +1203,8 @@ app.put('/boats/:boat_id/loads/:load_id', async (req, res, next) => {
       load.carrier = {   //add boat info to load.carrier
         "id": boat[datastore.KEY].id,
         "name": boat.name,
-        "self": getSelfURL(req, boat, 'boats')
+        "self": getSelfURL(req, boat, 'boats'),
+        "owner": owner_id
       };
       console.log("Updated boat info:", boat);
       console.log("Updated load info:", load);
@@ -1051,7 +1286,6 @@ app.delete('/boats/:boat_id/loads/:load_id', async (req, res, next) => {
     console.log(error);
     next(error);
   }
-
 });
 
 
