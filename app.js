@@ -609,15 +609,6 @@ app.patch('/boats/:id', checkJwt, async (req, res, next) => {
 
     const boat_update = req.body;
 
-    //ID must not be edited by this request
-    if (boat_update.id){
-      if (DEBUG) console.log("Cannot change ID");
-      status_code = 400;
-      error = {"Error": "Changing ID of entity is forbidden"}
-      res.status(status_code).send(error);
-      return;
-    }
-
     //Must not be updating ALL attributes (that's for PUT not PATCH)
     if (boat_update.name && boat_update.type && boat_update.length){
       if (DEBUG) console.log("Update failed. PATCH updates only some attributes. Use PUT to edit ALL attributes.");
@@ -1219,7 +1210,7 @@ app.delete('/loads', async (req,res,next) => {
 //Protected, accessible by boat owner
 
 
-
+//get all loads for a given boat
 app.get('/boats/:boat_id/loads/', checkJwt, async (req, res, next) => {
   try{
     //Validate "accepts" is application/json
@@ -1277,9 +1268,32 @@ app.get('/boats/:boat_id/loads/', checkJwt, async (req, res, next) => {
   }
 });
 
+//If JWT invalid
+app.use(async function (err, req, res, next) {
+  console.error(err);
+  if (err.name === "UnauthorizedError") {
+    if (DEBUG) console.log("Invalid JWT token, delete request refused.")
+    res.status(401).send({"Error": "JWT invalid, delete request denied."});
+  } else {
+      next(err);
+  }
+});
+
 //assign load to boat
 app.put('/boats/:boat_id/loads/:load_id', checkJwt, async (req, res, next) => { 
   try{
+
+    //Validate "accepts" is application/json
+    let status_code = null;
+    let error = null;
+    [status_code, error] = validateContentType(req, 'application/json');
+    //console.log("accepts content:", results);
+    if (error){
+      if (DEBUG) console.log("Invalid request accepts type")
+      res.status(status_code).send(error);
+      return;
+    }
+
     //Get the requested load
     const [load] = await getEntity('load', req.params.load_id);
     console.log("Found load:", load);
@@ -1345,6 +1359,17 @@ app.put('/boats/:boat_id/loads/:load_id', checkJwt, async (req, res, next) => {
   }
 });
 
+//If JWT invalid
+app.use(async function (err, req, res, next) {
+  console.error(err);
+  if (err.name === "UnauthorizedError") {
+    if (DEBUG) console.log("Invalid JWT token, load assignment request refused.")
+    res.status(401).send({"Error": "JWT invalid, load assignment request denied."});
+  } else {
+      next(err);
+  }
+});
+
 //Remove load from boat
 app.delete('/boats/:boat_id/loads/:load_id', async (req, res, next) => { 
   try{
@@ -1366,6 +1391,20 @@ app.delete('/boats/:boat_id/loads/:load_id', async (req, res, next) => {
         .send({"Error": "No boat with this boat_id is loaded with the load with this load_id"})
         .end();    
       return;  
+    }
+
+    //If boat found, check if it belongs to this owner
+    const owner_id = req.auth.sub;
+    if (DEBUG) console.log("Found boat:", boat);
+    if (DEBUG) console.log("checking if boat belongs to this owner...");
+    if (boat.owner !== owner_id){
+      if (DEBUG) console.log("Boat found, but belongs to different owner");
+      res
+        .status(401)
+        .set('Content-Type', 'application/json')
+        .send({"Error": "Boat owned by someone else."})
+        .end();
+        return;
     }
 
     //Determine if requested removed load is actually on given boat
@@ -1410,6 +1449,16 @@ app.delete('/boats/:boat_id/loads/:load_id', async (req, res, next) => {
   }
 });
 
+//If JWT invalid
+app.use(async function (err, req, res, next) {
+  console.error(err);
+  if (err.name === "UnauthorizedError") {
+    if (DEBUG) console.log("Invalid JWT token, remove load request refused.")
+    res.status(401).send({"Error": "JWT invalid, load removal request denied."});
+  } else {
+      next(err);
+  }
+});
 
 //------------------------RUN APP----------------------------------
 
