@@ -1371,7 +1371,7 @@ app.use(async function (err, req, res, next) {
 });
 
 //Remove load from boat
-app.delete('/boats/:boat_id/loads/:load_id', async (req, res, next) => { 
+app.delete('/boats/:boat_id/loads/:load_id', checkJwt, async (req, res, next) => { 
   try{
 
     //Get the requested load
